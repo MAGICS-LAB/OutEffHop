@@ -167,6 +167,36 @@ $ accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_cl
 ```
 
 
+
+### FP16 validation for STanHop models
+Run command:
+```bash
+$ python main_stanhop.py  --data ETTh1 --in_len 168 --out_len 24 --seg_len 6 --learning_rate 1e-4 --itr 1 --mode softmax1 --use_gpu --gpu 0  --batch_size 128 --run_name STHM_softmax1 --e_layers 11 --save_np --with_tracking
+```
+
+### INT8 validation for STanHop models
+Run command:
+```bash
+$ python quantized_main_stanhop.py  \
+  --data ETTh1 \
+  --in_len 168 \
+  --out_len 24 \
+  --seg_len 6 \
+  --learning_rate 1e-4 \
+  --itr 1 \
+  --mode softmax \
+  --use_gpu \
+  --gpu 0  \
+  --batch_size 128 \
+  --run_name STHM_softmax \
+  --e_layers 11 \
+  --quantize \
+  --quantize_model_path OutEffHop/OutEffHop/STanHop_outlier/checkpoints1/stanhop_ETTh1_il168_ol24_sl6_win1_fa10_dm256_nh4_el11_itr0_softmax/checkpoint.pth \
+  --seed $((i * 1000)) > OutEffHop/OutEffHop/STanHop_outlier/results/stanhop_ETTh1_quantized/softmax_seq24_$i.txt
+```
+
+
+
 ## OutEffHop Case study
 
 ### Environmental Setup
