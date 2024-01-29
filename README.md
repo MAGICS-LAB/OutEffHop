@@ -61,7 +61,7 @@ Make sure to pass the same softmax method arguments that were used for pre-train
 ### FP16 validation for BERT models
 Run command:
 ```bash
-accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_mlm_config.py \
+$ accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_mlm_config.py \
 --seed 3000 \
 --dataset_setup bookcorpus_and_wiki \
 --preprocessing_num_workers 8 \
@@ -80,7 +80,7 @@ accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_mlm_
 ### INT8 validation for BERT models
 Run command:
 ```bash
-accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_mlm_config.py \
+$ accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_mlm_config.py \
 --quantize \
 --est_num_batches 16 \
 --seed 4000 \
@@ -101,7 +101,7 @@ accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_mlm_
 ### FP16 validation for OPT models
 Run command:
 ```bash
-accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_clm.py \
+$ accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_clm.py \
 --seed 5678 \
 --dataset_setup bookcorpus_and_wiki \
 --preprocessing_num_workers 32 \
@@ -121,7 +121,31 @@ accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_clm.
 ### INT8 validation for OPT models
 Run command:
 ```bash
-accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_clm.py \
+$ accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_clm.py \
+--quantize \
+--quant_setup fp32_head \
+--ranges_acts running_minmax \
+--qmethod_acts asymmetric_uniform \
+--percentile 99.999 \
+--est_num_batches 4 \
+--seed 6789 \
+--dataset_setup bookcorpus_and_wiki \
+--preprocessing_num_workers 32 \
+--model_type opt \
+--block_size 512 \
+--per_device_eval_batch_size 1 \
+--attn_gate_type conditional_per_token \
+--attn_gate_init 0.25 \
+--data_cache_dir .hf_data  \
+--model_cache_dir .hf_cache \
+--model_name_or_path output/gate_opt \
+--output_dir output_metrics/opt_quantize_gate_attention-6789
+```
+
+### INT8 validation for OPT models
+Run command:
+```bash
+$ accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_clm.py \
 --quantize \
 --quant_setup fp32_head \
 --ranges_acts running_minmax \
