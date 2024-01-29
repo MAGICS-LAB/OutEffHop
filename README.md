@@ -19,7 +19,7 @@ $ export PYTHONPATH=${PYTHONPATH}:$(realpath "$PWD")
 
 #### Create suitable environment for different experiment.  
 
-    a. For experiment in paper section 4.1, outlier efficiency of BERT and OPT:
+1. For experiment in paper section 4.1, outlier efficiency of BERT and OPT:
       ```bash
       $ conda create -n outlier python==3.9
 
@@ -27,7 +27,7 @@ $ export PYTHONPATH=${PYTHONPATH}:$(realpath "$PWD")
       $ python -m pip install -r /your_path/OutEffHop/OutEffHop/requirements.txt
     ```
 
-    b. For the experiment in paper section 4.1 about STanHop : 
+2. For the experiment in paper section 4.1 about STanHop : 
       ```bash
       $ conda create -n STHM python==3.8
 
@@ -35,7 +35,7 @@ $ export PYTHONPATH=${PYTHONPATH}:$(realpath "$PWD")
       $ python -m pip install -r /your_path/OutEffHop/STanHop_time_seeries/requirements.txt
       ```
 
-    c. If you want run the experiment of STanHop quantize, please install below enviroment:
+3. If you want run the experiment of STanHop quantize, please install below enviroment:
       ```bash
         $ conda create -n quantize_STHM python==3.8
         $ python -m pip install -r /your_path/OutEffHop/OutEffHop/STanHop_outlier/quantize_requirements.txt
