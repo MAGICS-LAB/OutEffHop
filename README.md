@@ -17,7 +17,7 @@ $ pip install --upgrade --no-deps pip
 $ export PYTHONPATH=${PYTHONPATH}:$(realpath "$PWD")
 ```
 
-1. Create suitable environment for different experiment.  
+#### Create suitable environment for different experiment.  
 
     a. For experiment in paper section 4.1, outlier efficiency of BERT and OPT:
       ```bash
