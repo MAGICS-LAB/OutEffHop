@@ -10,63 +10,136 @@ You can set up the experimental environment by running the following command lin
 ```shell
 Set locale variables and add the project root directory to your pythonpath:
 
-export LC_ALL=C.UTF-8
-export LANG=C.UTF-8
-export PYTHONPATH=${PYTHONPATH}:$(realpath "$PWD")
+$ export LC_ALL=C.UTF-8
+$ export LANG=C.UTF-8
+$ cd OutEffHop/
+$ pip install --upgrade --no-deps pip
+$ export PYTHONPATH=${PYTHONPATH}:$(realpath "$PWD")
 ```
 
-Create suitable environment for different experiment.  
+1. Create suitable environment for different experiment.  
 
-For experiment in paper section 4.1, outlier efficiency of BERT and OPT:
+    a. For experiment in paper section 4.1, outlier efficiency of BERT and OPT:
+      ```bash
+      $ conda create -n outlier python==3.9
+
+      # Run the pip module as a script.
+      $ python -m pip install -r /your_path/OutEffHop/OutEffHop/requirements.txt
+    ```
+
+    b. For the experiment in paper section 4.1 about STanHop : 
+      ```bash
+      $ conda create -n STHM python==3.8
+
+      # Run the pip module as a script.
+      $ python -m pip install -r /your_path/OutEffHop/STanHop_time_seeries/requirements.txt
+      ```
+
+    c. If you want run the experiment of STanHop quantize, please install below enviroment:
+      ```bash
+        $ conda create -n quantize_STHM python==3.8
+        $ python -m pip install -r /your_path/OutEffHop/OutEffHop/STanHop_outlier/quantize_requirements.txt
+      ```
+
+### Pre-training commands
+All the training scripts (batch size, etc.) are set up to fit on two single A100 80GB GPU on Slrum machine.
+
+| Model     | Softmax         | Script                                                               |
+|:----------|:----------------|:---------------------------------------------------------------------|
+| BERT-base | vanilla, clipped softmax,  gated attention, gated OutEffHop,  clipped OutEffHop, OutEffHop | [OutEffHop_script/submit_outlier_bert.sh](OutEffHop_script/submit_outlier_bert.sh)         |
+| OPT-125m  | vanilla, clipped softmax,  gated attention, gated OutEffHop,  clipped OutEffHop, OutEffHop         | [OutEffHop_script/submit_outlier_opt.sh](OutEffHop_script/submit_outlier_opt.sh)                   |
+| STanHop  |vanilla, clipped softmax,  gated attention, gated OutEffHop,  clipped OutEffHop, OutEffHop | [OutEffHop_script/submit_STHM_outlier.sh](OutEffHop_script/submit_STHM_outlier.sh)   |
+
+
+
+### Validation commands
+After the model is trained, you can run evaluation (both floating point, and quantized) using 
+the following commands.
+Make sure to pass the same softmax method arguments that were used for pre-training (e.g., `--attn_softmax vanilla`, `--attn_softmax "clipped(-.025:1)"`, `--attn_softmax softmax1`, `--attn_gate_type conditional_per_token --attn_gate_mlp`, `--attn_gate_type conditional_per_token --attn_gate_init 0.25` etc.)
+
+
+### FP16 validation for BERT models
+Run command:
 ```bash
-conda create -n outlier python==3.9
-
-# Run the pip module as a script.
-python -m pip install -r /your_path/OutEffHop/OutEffHop/requirements.txt
+accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_mlm_config.py \
+--seed 3000 \
+--dataset_setup bookcorpus_and_wiki \
+--preprocessing_num_workers 8 \
+--model_type bert \
+--max_seq_length 128 \
+--mlm_probability 0.15 \
+--per_device_eval_batch_size 32 \
+--attn_softmax "clippedsoftmax1(-.025:1)" \
+--data_cache_dir .hf_data \
+--model_cache_dir .hf_cache \
+--model_name_or_path  output/clipped_softmax1 \
+--output_dir  /output_metrics/clipped_softmax1-3000
 ```
-For experiment in paper section 4.1, quantization of StanHop :
 
+
+### INT8 validation for BERT models
+Run command:
 ```bash
-conda create -n quantize_STHM python==3.8
-
-# Run the pip module as a script.
-python -m pip install -r /your_path/OutEffHop/OutEffHop/STanHop_outlier/quantize_requirements.txt
+accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_mlm_config.py \
+--quantize \
+--est_num_batches 16 \
+--seed 4000 \
+--dataset_setup bookcorpus_and_wiki \
+--preprocessing_num_workers 8 \
+--model_type bert \
+--max_seq_length 128 \
+--mlm_probability 0.15 \
+--per_device_eval_batch_size 32 \
+--attn_softmax "clippedsoftmax1(-.025:1)" \
+--data_cache_dir .hf_data \
+--model_cache_dir .hf_cache \
+--model_name_or_path  output/clipped_softmax1 \
+--output_dir  output_metrics/bert_quantize_clipped_softmax1-4000
 ```
 
-For the other experiment in paper 4.1, 4.2 about STanHop : 
+
+### FP16 validation for OPT models
+Run command:
 ```bash
-conda create -n STHM python==3.8
-
-# Run the pip module as a script.
-python -m pip install -r /your_path/OutEffHop/STanHop_time_seeries/requirements.txt
-```
-### Script for experiments in paper 4.1, 4.2
-
-We upload all the experiments slurm script in `\OutEffHop`.
-
-
-
-
-
-
-## Experimental Validation of Theoretical Results
-### Environmental Setup
-
-You can set up the experimental environment by running the following command line:
-
-```shell
-$ conda create -n theory_verify python=3.8
-$ conda activate theory_verify
-$ pip3 install -r requirements.txt
+accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_clm.py \
+--seed 5678 \
+--dataset_setup bookcorpus_and_wiki \
+--preprocessing_num_workers 32 \
+--model_type opt \
+--block_size 512 \
+--per_device_eval_batch_size 4 \
+--attn_gate_type conditional_per_token \
+--attn_gate_init 0.25 \
+--data_cache_dir .hf_data  \
+--model_cache_dir .hf_cache \
+--model_name_or_path output/gate_opt \
+--output_dir output_metrics/opt_gate_attention-5678
 ```
 
 
 
-### Plotting
-
-```shell
-$ cd theory_verfication/
-$ python3 Plotting.py
+### INT8 validation for OPT models
+Run command:
+```bash
+accelerate launch --config_file accelerate_configs/1gpu_no_mp.yaml validate_clm.py \
+--quantize \
+--quant_setup fp32_head \
+--ranges_acts running_minmax \
+--qmethod_acts asymmetric_uniform \
+--percentile 99.999 \
+--est_num_batches 4 \
+--seed 6789 \
+--dataset_setup bookcorpus_and_wiki \
+--preprocessing_num_workers 32 \
+--model_type opt \
+--block_size 512 \
+--per_device_eval_batch_size 1 \
+--attn_gate_type conditional_per_token \
+--attn_gate_init 0.25 \
+--data_cache_dir .hf_data  \
+--model_cache_dir .hf_cache \
+--model_name_or_path output/gate_opt \
+--output_dir output_metrics/opt_quantize_gate_attention-6789
 ```
 
 
@@ -137,6 +210,28 @@ batch OutEffHop_script/submit_STHM.sh
 | run_name | The name of experiment |
 | eta | The eta value of Entmax |
 | gamma | The gamma value of Entmax |
+
+
+
+## Experimental Validation of Theoretical Results
+### Environmental Setup
+
+You can set up the experimental environment by running the following command line:
+
+```shell
+$ conda create -n theory_verify python=3.8
+$ conda activate theory_verify
+$ pip3 install -r requirements.txt
+```
+
+
+
+### Plotting
+
+```shell
+$ cd theory_verfication/
+$ python3 Plotting.py
+```
 
 ## Acknowledgment
 
