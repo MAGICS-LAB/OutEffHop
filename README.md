@@ -275,6 +275,7 @@ You can set up the experimental environment by running the following command lin
 ```shell
 $ conda create -n theory_verify python=3.8
 $ conda activate theory_verify
+$ cd theory_verification
 $ pip3 install -r requirements.txt
 ```
 
@@ -283,8 +284,7 @@ $ pip3 install -r requirements.txt
 ### Plotting
 
 ```shell
-$ cd theory_verfication/
-$ python3 Plotting.py
+$ python3 plotting.py
 ```
 
 ## Acknowledgment
