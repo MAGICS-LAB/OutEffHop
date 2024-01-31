@@ -5,7 +5,7 @@ from torchvision import datasets, transforms
 import torch.nn.functional as F
 import random
 from datasets import load_dataset
-from data_utils import Textset, create_vocab, data_preprocessing
+#from data_utils import Textset, create_vocab, data_preprocessing
 from torch.utils.data import DataLoader
 
 import matplotlib.pyplot as plt 
