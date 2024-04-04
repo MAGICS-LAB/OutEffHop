@@ -94,6 +94,7 @@ def attach_tb_act_hooks(model):
 
 
 def main():
+    
     args = parse_args()
 
     # convert dataset setup to an enum
@@ -811,8 +812,6 @@ def main():
     logger.info(f"Max Kurtosis layers: {max_kurtosis_layers:.1f}")
     logger.info(f"\nAll metrics:\n{pformat(metrics)}")
     
-    
-
     if args.output_dir is not None:
         accelerator.wait_for_everyone()
         unwrapped_model = accelerator.unwrap_model(model)
@@ -826,7 +825,7 @@ def main():
 
             with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
                 json.dump(metrics, f)
-
+            
 
 if __name__ == "__main__":
     main()

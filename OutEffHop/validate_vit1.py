@@ -13,7 +13,6 @@ import glob
 import json
 import logging
 import os
-from torch.quantization import quantize_dynamic
 import time
 from collections import OrderedDict
 from contextlib import suppress
@@ -40,7 +39,7 @@ from transformers_language.quant_configs import get_quant_config
 from quantization.quantizers import QMethods
 from quantization.range_estimators import OptMethod, RangeEstimators
 from transformers_language.models.quantized_vit import QuantizedVisionTransformer
-from quanto import quantize
+#from transformers import AutoModelForCausalLM, AutoTokenizer, QuantoConfig
 
 
 from transformers_language.utils import (
@@ -334,11 +333,11 @@ def validate(args):
 
     if args.checkpoint:
         # if args.quantize:
-        #     quantization_config = QuantoConfig(weights="float8", activations='float8')
+        #     quantization_config = QuantoConfig(weights="int8", )
             
         # else:
         load_checkpoint(model, args.checkpoint, args.use_ema, strict=False)
-        
+        print(hasattr(model, 'load_pretrained'))
 
     if args.reparam:
         model = reparameterize_model(model)
@@ -473,6 +472,82 @@ def validate(args):
     top5 = AverageMeter()
     
     
+    
+    if args.quantize:
+        click_config = get_quant_config()
+
+        # override number of batches
+        click_config.act_quant.num_batches = args.est_num_batches
+        click_config.quant.n_bits = args.n_bits
+        click_config.quant.n_bits_act = args.n_bits_act
+        if args.no_weight_quant:
+            click_config.quant.weight_quant = False
+        if args.no_act_quant:
+            click_config.quant.act_quant = False
+
+        # Weight Ranges
+        if args.ranges_weights == "minmax":
+            pass
+        elif args.ranges_weights in ("mse", "MSE"):
+            click_config.quant.weight_quant_method = RangeEstimators.MSE
+            click_config.quant.weight_opt_method = OptMethod.grid
+        else:
+            raise ValueError(f"Unknown weight range estimation: {args.ranges_weights}")
+
+        # Acts ranges
+        if args.percentile is not None:
+            click_config.act_quant.options["percentile"] = args.percentile
+
+        if args.ranges_acts == "running_minmax":
+            click_config.act_quant.quant_method = RangeEstimators.running_minmax
+
+        elif args.ranges_acts == "MSE":
+            click_config.act_quant.quant_method = RangeEstimators.MSE
+            if args.qmethod_acts == "symmetric_uniform":
+                click_config.act_quant.options = dict(opt_method=OptMethod.grid)
+            elif args.qmethod_acts == "asymmetric_uniform":
+                click_config.act_quant.options = dict(opt_method=OptMethod.golden_section)
+
+        elif args.ranges_acts.startswith("L"):
+            click_config.act_quant.quant_method = RangeEstimators.Lp
+            p_norm = float(args.ranges_acts.replace("L", ""))
+            options = dict(p_norm=p_norm)
+            if args.qmethod_acts == "symmetric_uniform":
+                options["opt_method"] = OptMethod.grid
+            elif args.qmethod_acts == "asymmetric_uniform":
+                options["opt_method"] = OptMethod.golden_section
+            click_config.act_quant.options = options
+
+        else:
+            raise NotImplementedError(f"Unknown act range estimation setting, '{args.ranges_acts}'")
+        qparams = val_qparams(click_config)
+        qparams["quant_dict"] = {}
+        
+        qparams = val_qparams(click_config)
+        qparams["quant_dict"] = {}
+
+        model = QuantizedVisionTransformer(model, **qparams)
+        model.set_quant_state(
+            weight_quant=click_config.quant.weight_quant, act_quant=click_config.quant.act_quant
+        )
+
+        logger.info("Quantized model:")
+        logger.info(model)
+
+        # Range estimation
+        logger.info("** Estimate quantization ranges on training data **")
+        pass_data_for_range_estimation(
+            loader=loader,
+            model=model,
+            act_quant=click_config.quant.act_quant,
+            max_num_batches=click_config.act_quant.num_batches,
+        )
+        model.fix_ranges()
+        model.set_quant_state(
+            weight_quant=click_config.quant.weight_quant, act_quant=click_config.quant.act_quant
+        )
+    
+    
     # Hong-Yu 2024/3/16 08:13 ##
     act_dict = {}
     if EXTRA_METRICS and not args.quantize:
@@ -483,18 +558,14 @@ def validate(args):
         act_kurtoses = OrderedDict()
         act_kurtoses_ffn = OrderedDict()
     model.eval()
-    if args.quantize:
-        quantize(model, weights=quanto.qfloat8, activations=quanto.qfloat8)
-
-
     
     with torch.no_grad():
         # warmup, reduce variability of first batch time, especially for comparing torchscript vs non
-        input = torch.randn((args.batch_size,) + tuple(data_config['input_size']))
+        input = torch.randn((args.batch_size,) + tuple(data_config['input_size'])).to(device)
         if args.channels_last:
             input = input.contiguous(memory_format=torch.channels_last)
         with amp_autocast():
-            model(input.half().to(device))
+            model(input)
 
         end = time.time()
         for batch_idx, (input, target) in enumerate(loader):
@@ -506,7 +577,7 @@ def validate(args):
 
             # compute output
             with amp_autocast():
-                output = model(input.to(device).half())
+                output = model(input)
 
                 if valid_labels is not None:
                     output = output[:, valid_labels]

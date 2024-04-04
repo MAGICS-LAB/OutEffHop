@@ -61,4 +61,5 @@ SOFTMAX_MAPPING = {
     "clipped(-.1:1.1)": partial(clipped_softmax, gamma=-0.1, eta=1.1),
     "clippedsoftmax1(-.025:1)": partial(clipped_softmax1, gamma=-0.025, eta=1.1),
     "clippedsoftmax1(-.00001:1)": partial(clipped_softmax1, gamma=-0.00001, eta=1.0),
+    "clippedsoftmax1(-.0001:1)": partial(clipped_softmax1, gamma=-0.0001, eta=1.0),
 }

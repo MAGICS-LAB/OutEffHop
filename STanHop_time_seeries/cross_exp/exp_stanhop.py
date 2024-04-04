@@ -1,7 +1,6 @@
 from data.data_loader import Dataset_MTS
 from cross_exp.exp_basic import Exp_Basic
 from cross_models.stanhop import STanHopNet
-from torchmetrics.functional import r2_score
 
 from utils.tools import EarlyStopping, adjust_learning_rate
 from utils.metrics import metric
@@ -467,8 +466,7 @@ class Exp_Stanhop(Exp_Basic):
 
         a = torch.from_numpy(preds).permute(2,1,0).reshape(44, -1)
         b = torch.from_numpy(trues).permute(2,1,0).reshape(44, -1)
-        r2 = r2_score(a, b).item()
-        print(r2)
+
 
         np.save(folder_path+'metrics.npy', np.array([mae, mse, rmse, mape, mspe, r2]))
         if (save_pred):

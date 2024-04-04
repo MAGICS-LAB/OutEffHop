@@ -64,6 +64,7 @@ class QuantizedModule(nn.Module):
     ):
         kwargs.pop("act_quant_dict", None)
         kwargs.pop("quant_dict", None)
+        kwargs.pop('quant_setup',None)
 
         super().__init__(*args, **kwargs)
 

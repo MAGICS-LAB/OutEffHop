@@ -25,7 +25,7 @@ from collections import OrderedDict
 from contextlib import suppress
 from datetime import datetime
 from functools import partial
-from scipy.stats import kurtosis
+# from scipy.stats import kurtosis
 from timm.utils import AverageMeter
 import shutil
 from pathlib import Path
@@ -39,6 +39,7 @@ import torch.nn as nn
 import torchvision.utils
 import yaml
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
+import torch.distributed as dist
 
 from timm import utils
 from timm.data import create_dataset, create_loader, resolve_data_config, Mixup, FastCollateMixup, AugMixDataset
@@ -57,6 +58,7 @@ from transformers_language.models.vit_attention import (
 )
 from transformers_language.models.softmax import SOFTMAX_MAPPING
 from transformers_language.utils import count_params
+from socket import gethostname
 
 try:
     from apex import amp
@@ -508,6 +510,10 @@ def _parse_args():
     args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
     return args, args_text
 
+def setup(rank, world_size):
+    # initialize the process group
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+
 
 def main():
     utils.setup_default_logging()
@@ -536,7 +542,32 @@ def main():
 
     args.prefetcher = not args.no_prefetcher
     args.grad_accum_steps = max(1, args.grad_accum_steps)
-    device = utils.init_distributed_device(args)
+    
+    
+    
+    # device = utils.init_distributed_device(args)
+    
+    #### Use Princeton tutorial to test multinodes ####
+    
+    args.world_size    = int(os.environ["WORLD_SIZE"])
+    args.rank          = int(os.environ["SLURM_PROCID"])
+    gpus_per_node = int(os.environ["SLURM_GPUS_ON_NODE"])
+    assert gpus_per_node == torch.cuda.device_count()
+    print(f"Hello from rank {args.rank} of {args.world_size} on {gethostname()} where there are" \
+          f" {gpus_per_node} allocated GPUs per node.", flush=True)
+    
+    if args.rank == 0: print(f"Group initialized? {dist.is_initialized()}", flush=True)
+    args.local_rank = args.rank - gpus_per_node * (args.rank // gpus_per_node)
+    setup(args.rank, args.world_size)
+    args.distributed = True
+    device = 'cuda:%d' % args.local_rank
+    torch.cuda.set_device(args.local_rank)
+    args.device = device
+    device = torch.device(device)
+    print(f"host: {gethostname()}, rank: {args.rank}, local_rank: {args.local_rank}")
+
+    
+    
     if args.distributed:
         _logger.info(
             'Training in distributed mode with multiple processes, 1 device per process.'
@@ -1022,7 +1053,10 @@ def main():
     num_layers = len(model.module.blocks)
     ffn_inf_norm = None
     try:
-        completed_steps = 0
+        if args.resume:
+            completed_steps = resume_epoch * updates_per_epoch
+        else:
+            completed_steps = 0
         for epoch in range(start_epoch, num_epochs):
             if hasattr(dataset_train, 'set_epoch'):
                 dataset_train.set_epoch(epoch)

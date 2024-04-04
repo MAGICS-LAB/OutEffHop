@@ -42,6 +42,7 @@ class QuantizationHijacker(QuantizedModule):
     """
 
     def __init__(self, *args, activation: nn.Module = None, **kwargs):
+        print(*args)
         super().__init__(*args, **kwargs)
         if activation:
             assert isinstance(activation, tuple(activations_set)), str(activation)
