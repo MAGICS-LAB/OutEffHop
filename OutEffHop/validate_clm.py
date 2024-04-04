@@ -60,6 +60,7 @@ MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
 
+
 def main():
     args = parse_args()
     logger.info(args)
@@ -430,8 +431,13 @@ def main():
 
         # use MSE for weights (ignore `args.ranges_weights`)
         # click_config.quant.weight_quant_method = RangeEstimators.current_minmax
-        click_config.quant.weight_quant_method = RangeEstimators.MSE
-        click_config.quant.weight_opt_method = OptMethod.grid
+        if args.ranges_weights == "minmax":
+            pass
+        elif args.ranges_weights in ("mse", "MSE"):
+            click_config.quant.weight_quant_method = RangeEstimators.MSE
+            click_config.quant.weight_opt_method = OptMethod.grid
+        else:
+            raise ValueError(f"Unknown weight range estimation: {args.ranges_weights}")
 
         # qmethod acts
         if args.qmethod_acts == "symmetric_uniform":
@@ -492,6 +498,21 @@ def main():
         model.set_quant_state(
             weight_quant=click_config.quant.weight_quant, act_quant=click_config.quant.act_quant
         )
+        
+        if args.save_quantize_model:
+        #   if not isinstance(model, torch.quantization.QuantWrapper):
+        #     print("The model is not quantized. Please quantize the model before saving.")
+        #   else:
+        # Save the quantized model
+            model.save_pretrained(
+                args.output_dir,
+                is_main_process=accelerator.is_main_process,
+                save_function=accelerator.save,
+            )
+            if accelerator.is_main_process:
+                tokenizer.save_pretrained(args.output_dir)
+                # with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
+                #     json.dump(metrics, f)
 
     # attach hooks for activation stats
     def attach_act_hooks(model):
@@ -614,6 +635,8 @@ def main():
         os.makedirs(args.output_dir, exist_ok=True)
         with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
             json.dump(metrics, f)
+    
+    
 
 
 if __name__ == "__main__":

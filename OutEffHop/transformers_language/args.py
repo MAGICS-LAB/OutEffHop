@@ -176,6 +176,11 @@ def parse_args():
     parser.add_argument(
         "--output_dir", type=str, default=None, help="Where to store the final model."
     )
+    
+    parser.add_argument('--model_output_dir', type=str, default=None, help="Where to store the final quantize model.")
+    
+    parser.add_argument('--save_quantize_model', default=False, action="store_true")
+    
     parser.add_argument(
         "--checkpointing_steps",
         type=str,
@@ -186,7 +191,7 @@ def parse_args():
     parser.add_argument(
         "--max_checkpointing_number",
         type=int,
-        default=1,
+        default=2,
     )
     parser.add_argument(
         "--resume_from_checkpoint",

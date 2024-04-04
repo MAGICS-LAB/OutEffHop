@@ -23,7 +23,7 @@ from quantization.autoquant_utils import (
 from quantization.base_quantized_classes import QuantizedActivation
 from quantization.base_quantized_model import QuantizedModel
 from transformers_language.models.bert_attention import AttentionGateType
-
+from transformers import PreTrainedModel
 
 class QuantizedOPTLearnedPositionalEmbedding(QuantizedModel):
     def __init__(self, org_model, **quant_params):
@@ -717,12 +717,15 @@ class QuantizedOPTModel(QuantizedModel):
         )
 
 
-class QuantizedOPTForCausalLM(QuantizedModel):
+class QuantizedOPTForCausalLM(QuantizedModel, PreTrainedModel):
     def __init__(self, org_model, quant_setup=None, **quant_params):
-        super().__init__()
-
         # copy attributes
         self.config = org_model.config
+        #super().__init__()
+        QuantizedModel()
+        PreTrainedModel.__init__(self, self.config)
+
+        
 
         # quantized backbone (essentially a decoder)
         self.model = QuantizedOPTModel(org_model.model, **quant_params)

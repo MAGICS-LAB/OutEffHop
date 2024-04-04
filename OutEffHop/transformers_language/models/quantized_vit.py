@@ -10,13 +10,13 @@ from torch import nn
 from torch.jit import Final
 from quantization.utils import BaseEnumOptions
 from transformers_language.models.softmax import clipped_softmax
-import torch.nn.Function as F
+import torch.nn.functional as F
 import random
 import warnings
 from torch.utils.checkpoint import checkpoint
 from itertools import chain
 import os
-from vision_transformer import init_weights_vit_moco, get_init_weights_vit, _load_weights, init_weights_vit_jax
+from timms.models.vision_transformer import init_weights_vit_moco, get_init_weights_vit, _load_weights, init_weights_vit_jax
 try:
     from typing import Literal
 except ImportError:
@@ -38,7 +38,9 @@ from transformers_language.models.bert_attention import (
 )
 from transformers_language.utils import DotDict
 
-from timm.layers import trunc_normal_, lecun_normal_, resample_abs_pos_embed, use_fused_attn
+from timms.layers import trunc_normal_, lecun_normal_, resample_abs_pos_embed, use_fused_attn
+from timms.layers.helpers import to_2tuple
+from timms.layers.format import Format, nchw_to
 
 def checkpoint_seq(
         functions,
@@ -190,7 +192,7 @@ def scaled_dot_product_attention(query, key, value, softmax_fn, attn_mask=None, 
     # Efficient implementation equivalent to the following:
     L, S = query.size(-2), key.size(-2)
     scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
-    attn_bias = torch.zeros(L, S, dtype=query.dtype)
+    attn_bias = torch.zeros(L, S, dtype=query.dtype).to(query.device)
     if is_causal:
         assert attn_mask is None
         temp_mask = torch.ones(L, S, dtype=torch.bool).tril(diagonal=0)
@@ -203,7 +205,7 @@ def scaled_dot_product_attention(query, key, value, softmax_fn, attn_mask=None, 
         else:
             attn_bias += attn_mask
     attn_weight = query @ key.transpose(-2, -1) * scale_factor
-    attn_weight += attn_bias
+    attn_weight += attn_bias.to(attn_weight.device)
     attn_weight = torch.softmax(attn_weight, dim=-1)
     attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
     return attn_weight @ value
@@ -304,7 +306,7 @@ class QuantizedAttentionPoolLatent(QuantizedModel):
             spatial_len = self.feat_size
             self.pos_embed = nn.Parameter(torch.zeros(spatial_len, org_model.in_features))
         else:
-            self.pos_embed = Noneself.pos_embed
+            self.pos_embed = None
 
         self.latent_dim = org_model.latent_dim or org_model.embed_dim
         self.latent_len = org_model.latent_len
@@ -320,6 +322,7 @@ class QuantizedAttentionPoolLatent(QuantizedModel):
         self.norm = quantize_model(org_model.norm, **quant_params) if norm_layer is not None else nn.Identity()
         self.mlp = quantize_model(org_model.mlp, **quant_params)
         self.init_weights()
+        self.softmax_fn = org_model.softmax_fn
 
     def init_weights(self):
         if self.pos_embed is not None:
@@ -342,11 +345,11 @@ class QuantizedAttentionPoolLatent(QuantizedModel):
         q, k = self.q_norm(q), self.k_norm(k)
 
         if self.fused_attn:
-            x = F.scaled_dot_product_attention(q, k, v)
+            x = scaled_dot_product_attention(q, k, v, softmax_fn=self.softmax_fn, dropout_p=self.attn_drop.p if self.training else 0.,)
         else:
             q = q * self.scale
             attn = q @ k.transpose(-2, -1)
-            attn = attn.softmax(dim=-1)
+            attn = self.softmax_fn(attn, dim=-1)
             x = attn @ v
         x = x.transpose(1, 2).reshape(B, self.latent_len, C)
         x = self.proj(x)
@@ -362,21 +365,77 @@ class QuantizedAttentionPoolLatent(QuantizedModel):
         return x
 
 
+class QuantizedPatchEmbed(nn.Module):
+    """ 2D Image to Patch Embedding
+    """
+    output_fmt: Format
+    dynamic_img_pad: torch.jit.Final[bool]
+
+    def __init__(
+            self,
+            org_model,
+            img_size,
+            norm_layer: Optional[Callable] = None,
+            output_fmt: Optional[str] = None,
+            **quant_params
+    ):
+        super().__init__()
+        self.patch_size = org_model.patch_size
+        if img_size is not None:
+            self.img_size = org_model.img_size
+            self.grid_size = tuple([s // p for s, p in zip(self.img_size, self.patch_size)])
+            self.num_patches = self.grid_size[0] * self.grid_size[1]
+        else:
+            self.img_size = None
+            self.grid_size = None
+            self.num_patches = None
+
+        if output_fmt is not None:
+            self.flatten = False
+            self.output_fmt = Format(output_fmt)
+        else:
+            # flatten spatial dim and transpose to channels last, kept for bwd compat
+            self.flatten = org_model.flatten
+            self.output_fmt = Format.NCHW
+        self.strict_img_size = org_model.strict_img_size
+        self.dynamic_img_pad = org_model.dynamic_img_pad
+
+        self.proj = quantize_model(org_model.proj, **quant_params)
+        self.norm = quantize_model(org_model.norm, **quant_params) if norm_layer else nn.Identity()
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        if self.img_size is not None:
+            pass
+        if self.dynamic_img_pad:
+            pad_h = (self.patch_size[0] - H % self.patch_size[0]) % self.patch_size[0]
+            pad_w = (self.patch_size[1] - W % self.patch_size[1]) % self.patch_size[1]
+            x = F.pad(x, (0, pad_w, 0, pad_h))
+        x = self.proj(x)
+        if self.flatten:
+            x = x.flatten(2).transpose(1, 2)  # NCHW -> NLC
+        elif self.output_fmt != Format.NCHW:
+            x = nchw_to(x, self.output_fmt)
+        x = self.norm(x)
+        return x
+
 
 class QuantizedViTSelfAttentionWithExtras(QuantizedModel):
     def __init__(self, org_model, **quant_params):
         super().__init__()
-
+        
         # copy attributes
         self.num_heads = org_model.num_attention_heads
         self.attention_head_size = org_model.attention_head_size
         self.scale = org_model.scale
         self.alpha = org_model.alpha
+        
+        self.gamma = org_model.gamma
         self.ssm_eps = org_model.ssm_eps
         self.tau = org_model.tau
         self.max_seq_length = org_model.max_seq_length
         self.fused_attn = org_model.fused_attn
-        self.gamma = org_model.gamma
+        
 
         self.qkv = quantize_model(org_model.qkv, **quant_params)
         self.q_norm = quantize_model(org_model.q_norm, **quant_params)
@@ -414,7 +473,7 @@ class QuantizedViTSelfAttentionWithExtras(QuantizedModel):
     def forward(self, x):
         hidden_states = x
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.attention_head_size).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
@@ -432,10 +491,11 @@ class QuantizedViTSelfAttentionWithExtras(QuantizedModel):
             attn = self.attn_probs_after_dropout(attn)
             x = attn @ v
 
+        attn_output = x
         # *** Gating ***
         if self.attn_gate_type == AttentionGateType.unconditional_per_head:
             gate = self.gate_fn(self.alpha)  # (H,)
-            context_layer *= gate.view(-1, 1, 1)  # (B, H, T, d_head)
+            attn_output *= gate.view(-1, 1, 1)  # (B, H, T, d_head)
 
             self.last_gate_avg_prob = gate.view(-1)
 
@@ -466,13 +526,13 @@ class QuantizedViTSelfAttentionWithExtras(QuantizedModel):
                 alpha = torch.stack(alpha, dim=1)  # (B, H, *, 1)
                 gate = self.gate_fn(alpha)
 
-            context_layer *= gate * self.gate_scaling_factor
+            attn_output *= gate * self.gate_scaling_factor
 
             self.last_gate_all_probs = gate  # all gates to see the distributions
             avg_gate = gate.mean(dim=0)
             self.last_gate_avg_prob = avg_gate.view(self.num_attention_heads, -1).mean(dim=1)
             
-        x = context_layer.transpose(1, 2).reshape(B, N, C)
+        x = attn_output.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
@@ -509,10 +569,8 @@ class QuantizedBlock(QuantizedModel):
         self.res_act_quantizer_2 = QuantizedActivation(**quant_params)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x))))
-        x = self.res_act_quantizer_1(x)
-        x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
-        x = self.res_act_quantizer_2(x)
+        x = x + self.drop_path1(self.norm1(self.attn(x)))
+        x = x + self.drop_path2(self.norm2(self.mlp(x)))
         return x
 
 
@@ -530,14 +588,19 @@ class QuantizedVisionTransformer(QuantizedModel):
         super().__init__()
         assert org_model.global_pool in ('', 'avg', 'token', 'map')
         assert org_model.has_class_token or org_model.global_pool != 'token'
-        # use_fc_norm = org_model.global_pool == 'avg' if org_model.fc_norm is None else org_model.fc_norm
-        # norm_layer = quantize_model(org_model.norm_layer, **quant_params)
-        # act_layer = quantize_model(org_model.act_layer, **quant_params)
+        use_fc_norm = org_model.global_pool == 'avg' if org_model.fc_norm is None else org_model.fc_norm
+        #self.norm_layer = quantize_model(org_model.norm_layer, **quant_params)
+        #self.act_layer = quantize_model(org_model.act_layer, **quant_params)
+        
+        self.patch_size = org_model.patch_size
+        self.in_chans = org_model.in_chans
+        self.dynamic_img_pad = org_model.dynamic_img_pad
+        self.img_size = org_model.img_size
         
         self.num_classes = org_model.num_classes
         self.global_pool = org_model.global_pool
         self.num_features = org_model.embed_dim  # num_features for consistency with other models
-        self.num_prefix_tokens = 1 if org_model.class_token else 0
+        self.num_prefix_tokens = 1 if org_model.has_class_token else 0
         self.num_prefix_tokens += org_model.num_reg_tokens
         self.num_reg_tokens = org_model.num_reg_tokens
         self.has_class_token = org_model.has_class_token
@@ -545,11 +608,15 @@ class QuantizedVisionTransformer(QuantizedModel):
         self.dynamic_img_size = org_model.dynamic_img_size
         self.grad_checkpointing = False
 
-        # embed_args = {}
-        # if self.dynamic_img_size:
-        #     # flatten deferred until after pos embed
-        #     embed_args.update(dict(strict_img_size=False, output_fmt='NHWC'))
-        self.patch_embed = quantize_model(org_model.embed_layer, **quant_params)
+        embed_args = {}
+        if self.dynamic_img_size:
+            # flatten deferred until after pos embed
+            embed_args.update(dict(strict_img_size=False, output_fmt='NHWC'))
+        self.patch_embed = QuantizedPatchEmbed(
+            org_model.patch_embed,
+            self.img_size,
+            **quant_params,
+        )
         num_patches = self.patch_embed.num_patches
 
         self.cls_token = org_model.cls_token 
@@ -557,12 +624,9 @@ class QuantizedVisionTransformer(QuantizedModel):
         # embed_len = num_patches if self.no_embed_class else num_patches + self.num_prefix_tokens
         self.pos_embed = org_model.pos_embed
         self.pos_drop = org_model.pos_drop
-        # if org_model.patch_drop_rate > 0:
-        #     self.patch_drop = quantize_model(org_model.patch_drop, **quant_params)
-        # else:
-        #     self.patch_drop = nn.Identity()
+
         self.patch_drop = org_model.patch_drop
-            
+        print(org_model.norm_pre)
         self.norm_pre = quantize_model(org_model.norm_pre, **quant_params)
 
         # dpr = [x.item() for x in torch.linspace(0, org_model.drop_path_rate, org_model.depth)]  # stochastic depth decay rule
@@ -571,17 +635,11 @@ class QuantizedVisionTransformer(QuantizedModel):
             QuantizedBlock(org_model.blocks[i], **quant_params)
             for i in range(org_model.depth)])
         
-        # self.norm = norm_layer(org_model.embed_dim) if not use_fc_norm else nn.Identity()
+        #self.norm = norm_layer(org_model.embed_dim) if not use_fc_norm else nn.Identity()
         self.norm  = quantize_model(org_model.norm, **quant_params)
         
         # Classifier Head
         if org_model.global_pool == 'map':
-            # self.attn_pool = QuantizedAttentionPoolLatent(
-            #     self.embed_dim,
-            #     norm_layer=norm_layer,
-            #     org_model=org_model.attn_pool,
-            #     **quant_params
-            # )
             self.attn_pool = quantize_model(org_model.attn_pool, **quant_params)
         else:
             self.attn_pool = None
@@ -751,197 +809,3 @@ class QuantizedVisionTransformer(QuantizedModel):
         return x
     
 
-
-
-
-
-
-
-
-class ViTSelfAttentionWithExtras(nn.Module):
-    fused_attn: Final[bool]
-
-    def __init__(
-            self,
-            dim: int,
-            org_model,
-            num_heads: int = 8,
-            qkv_bias: bool = False,
-            qk_norm: bool = False,
-            attn_drop: float = 0.,
-            proj_drop: float = 0.,
-            norm_layer: nn.Module = nn.LayerNorm,
-            softmax_fn=torch.nn.functional.softmax,
-            alpha=None,
-            ssm_eps=None,
-            tau=None,
-            max_seq_length=None,
-            skip_attn=False,
-            attn_gate_type=AttentionGateType.none,
-            attn_gate_init=None,
-            attn_gate_mlp=False,
-            attn_gate_mlp2=False,
-            attn_gate_linear_all_features=False,
-            fine_tuning=False,
-            **quant_params
-    ) -> None:
-        super().__init__()
-        assert dim % num_heads == 0, 'dim should be divisible by num_heads'
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
-        self.fused_attn = use_fused_attn()
-
-        self.qkv = quantize_model(org_model.qkv, **quant_params)
-        self.q_norm = quantize_model(org_model.q_norm, **quant_params) if qk_norm else nn.Identity()
-        self.k_norm = quantize_model(org_model.k_norm, **quant_params) if qk_norm else nn.Identity()
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = quantize_model(org_model.proj, **quant_params)
-        self.proj_drop = nn.Dropout(proj_drop)
-        self.attn_scores = nn.Identity()  # before attention mask
-        self.attn_probs_before_dropout = nn.Identity()
-        self.attn_probs_after_dropout = nn.Identity()
-
-        self.alpha = alpha
-        self.ssm_eps = ssm_eps
-        self.tau = tau
-        self.max_seq_length = max_seq_length
-
-        # define softmax function
-        if self.alpha is not None:
-            assert self.max_seq_length is not None
-            gamma = -self.alpha / self.max_seq_length
-            self.softmax_fn = partial(clipped_softmax, gamma=gamma, eta=1.0)
-        else:
-            self.softmax_fn = softmax_fn
-
-        self.skip_attn = skip_attn
-
-        # attention gating
-        self.last_gate_avg_prob = None
-        self.last_gate_all_probs = None
-
-        self.attn_gate_type = attn_gate_type
-        self.attn_gate_init = attn_gate_init
-        self.attn_gate_mlp = attn_gate_mlp
-        self.attn_gate_mlp2 = attn_gate_mlp2
-        self.attn_gate_linear_all_features = attn_gate_linear_all_features
-
-        self.alpha = None
-        self.gate_fn = torch.sigmoid
-        self.pooling_fn = partial(torch.mean, dim=1, keepdims=True)
-
-        self.fine_tuning = fine_tuning
-
-        # gate scaling factor
-        self.gate_scaling_factor = 1.0
-        if self.fine_tuning and self.attn_gate_init is not None:
-            self.gate_scaling_factor = 1.0 / self.attn_gate_init
-
-        # define gate
-        if self.attn_gate_type == AttentionGateType.unconditional_per_head:
-            init_alpha = torch.zeros(size=(self.num_attention_heads,))
-            self.alpha = nn.Parameter(init_alpha, requires_grad=True)
-
-        elif self.attn_gate_type in (
-            AttentionGateType.conditional_per_head,
-            AttentionGateType.conditional_per_token,
-        ):
-            if self.attn_gate_linear_all_features:
-                self.alpha = nn.Linear(self.all_head_size, self.num_attention_heads, bias=True)
-
-            else:  # separate predictors for each head
-                module_list = []
-                for _ in range(self.num_attention_heads):
-                    if self.attn_gate_mlp:
-                        fc = nn.Sequential(
-                            nn.Linear(
-                                self.attention_head_size, self.attention_head_size // 4, bias=True
-                            ),
-                            nn.ReLU(),
-                            nn.Linear(self.attention_head_size // 4, 1, bias=True),
-                        )
-                    elif self.attn_gate_mlp2:
-                        fc = nn.Sequential(
-                            nn.Linear(
-                                self.attention_head_size, self.attention_head_size, bias=True
-                            ),
-                            nn.ReLU(),
-                            nn.Linear(self.attention_head_size, 1, bias=True),
-                        )
-                    else:
-                        fc = nn.Linear(self.attention_head_size, 1, bias=True)
-
-                        if self.attn_gate_init is not None:
-                            init_bias = logit(self.attn_gate_init)
-                            torch.nn.init.constant_(fc.bias, init_bias)
-
-                        if self.fine_tuning:
-                            # init to a very small values
-                            torch.nn.init.normal_(fc.weight, mean=0.0, std=0.01)
-
-                    module_list.append(fc)
-                self.alpha = nn.ModuleList(module_list)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)
-        q, k = self.q_norm(q), self.k_norm(k)
-
-        if self.fused_attn:
-            x = scaled_dot_product_attention(
-                q, k, v, self.softmax_fn,
-                dropout_p=self.attn_drop.p if self.training else 0.,
-            )
-        else:
-            q = q * self.scale
-            attn = q @ k.transpose(-2, -1)
-            
-            attn = self.softmax_fn(attn, dim=-1)
-            attn = self.attn_probs_before_dropout(attn)
-            attn = self.attn_drop(attn)
-            attn = self.attn_probs_after_dropout(attn)
-            x = attn @ v
-        # *** Gating ***
-        if self.attn_gate_type == AttentionGateType.unconditional_per_head:
-            gate = self.gate_fn(self.alpha)  # (H,)
-            context_layer *= gate.view(-1, 1, 1)  # (B, H, T, d_head)
-
-            self.last_gate_avg_prob = gate.view(-1)
-
-        elif self.attn_gate_type in (
-            AttentionGateType.conditional_per_head,
-            AttentionGateType.conditional_per_token,
-        ):
-            if self.attn_gate_linear_all_features:  # assume per_token
-                alpha = self.alpha(x)  # (B, T, H)
-                gate = self.gate_fn(alpha)
-                gate = gate.permute(0, 2, 1).contiguous()  # (B, H, T)
-                gate = gate.unsqueeze(3)  # (B, H, T, 1)
-
-            else:
-                x = self.transpose_for_scores(x)  # (B, H, T, d_head)
-
-                alpha = []
-                for head_idx in range(self.num_attention_heads):
-                    x_head = x[:, head_idx, ...]  # (B, T, d_head)
-                    fc_head = self.alpha[head_idx]
-                    alpha_head = fc_head(x_head)  # (B, T, 1)
-                    if self.attn_gate_type == AttentionGateType.conditional_per_head:
-                        alpha_head = self.pooling_fn(alpha_head)  # (B, 1, 1)
-                    alpha.append(alpha_head)
-                alpha = torch.stack(alpha, dim=1)  # (B, H, *, 1)
-                gate = self.gate_fn(alpha)
-
-            context_layer *= gate * self.gate_scaling_factor
-
-            self.last_gate_all_probs = gate  # all gates to see the distributions
-            avg_gate = gate.mean(dim=0)
-            self.last_gate_avg_prob = avg_gate.view(self.num_attention_heads, -1).mean(dim=1)
-
-
-        x = x.transpose(1, 2).reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x

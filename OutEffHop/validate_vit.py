@@ -13,6 +13,7 @@ import glob
 import json
 import logging
 import os
+from torch.quantization import quantize_dynamic
 import time
 from collections import OrderedDict
 from contextlib import suppress
@@ -21,11 +22,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.parallel
-
-from timm.data import create_dataset, create_loader, resolve_data_config, RealLabelsImagenet
-from timm.layers import apply_test_time_pool, set_fast_norm
-from timm.models import create_model, load_checkpoint, is_model, list_models
-from timm.utils import accuracy, AverageMeter, natural_key, setup_default_logging, set_jit_fuser, \
+import quanto
+from timms.data import create_dataset, create_loader, resolve_data_config, RealLabelsImagenet
+from timms.layers import apply_test_time_pool, set_fast_norm
+from timms.models import create_model, load_checkpoint, is_model, list_models
+from timms.utils import accuracy, AverageMeter, natural_key, setup_default_logging, set_jit_fuser, \
     decay_batch_step, check_batch_size_retry, ParseKwargs, reparameterize_model
     
 from transformers_language.args import parse_args
@@ -35,6 +36,12 @@ from transformers_language.models.vit_attention import (
     ViTSelfAttentionWithExtras,
 )
 from transformers_language.models.softmax import SOFTMAX_MAPPING
+from transformers_language.quant_configs import get_quant_config
+from quantization.quantizers import QMethods
+from quantization.range_estimators import OptMethod, RangeEstimators
+from transformers_language.models.quantized_vit import QuantizedVisionTransformer
+from quanto import quantize
+
 
 from transformers_language.utils import (
     count_params,
@@ -177,6 +184,20 @@ parser.add_argument('--with_tracking', action='store_true', default=False,
 parser.add_argument('--attn_softmax', default='vanilla', type=str)
 parser.add_argument('--run_name', default='', type=str)
 
+parser.add_argument("--quantize", action="store_true")
+parser.add_argument("--est_num_batches", type=int, default=1)
+parser.add_argument("--n_bits", type=int, default=8)
+parser.add_argument("--n_bits_act", type=int, default=8)
+parser.add_argument("--no_weight_quant", action="store_true")
+parser.add_argument("--no_act_quant", action="store_true")
+parser.add_argument("--qmethod_acts", type=str, default="asymmetric_uniform")
+parser.add_argument("--ranges_weights", type=str, default="minmax")
+parser.add_argument("--ranges_acts", type=str, default="running_minmax")
+parser.add_argument(
+    "--percentile", type=float, default=None, help="Percentile (in %) for range estimation."
+)
+parser.add_argument("--quant_setup", type=str, default="all")
+
 parser.add_argument("--fine_tuning", action="store_true")
 parser.add_argument(
     "--skip_attn",
@@ -312,7 +333,12 @@ def validate(args):
         args.num_classes = model.num_classes
 
     if args.checkpoint:
-        load_checkpoint(model, args.checkpoint, args.use_ema)
+        # if args.quantize:
+        #     quantization_config = QuantoConfig(weights="float8", activations='float8')
+            
+        # else:
+        load_checkpoint(model, args.checkpoint, args.use_ema, strict=False)
+        
 
     if args.reparam:
         model = reparameterize_model(model)
@@ -345,7 +371,7 @@ def validate(args):
 
     # Gating -> load the model again to load missing alpha
     if args.attn_gate_type != "none":
-        path = args.checkpoint + "last.pth.tar"
+        path = args.checkpoint 
         state_dict = torch.load(path)
         new_state_dict = {}
         for name, val in state_dict.items():
@@ -355,17 +381,17 @@ def validate(args):
 
 
 
-    n_embeddings = count_params(model.pos_embed)
-    n_encoder = count_params(model.blocks)
-    n_head = count_params(model.head)
-    logger.info(
-        f"\nNumber of parameters:\n"
-        f"\t* Embeddings:\t{n_embeddings}\n"
-        f"\t* Encoder:\t{n_encoder}\n"
-        f"\t* Head:\t{n_head}\n"
-        f"\t= Total (pre-training):\t{n_embeddings + n_encoder + n_head}\n"
-        f"\t= Total (encoder):\t{n_embeddings + n_encoder}\n"
-    )
+    # n_embeddings = count_params(model.pos_embed)
+    # n_encoder = count_params(model.blocks)
+    # n_head = count_params(model.head)
+    # logger.info(
+    #     f"\nNumber of parameters:\n"
+    #     f"\t* Embeddings:\t{n_embeddings}\n"
+    #     f"\t* Encoder:\t{n_encoder}\n"
+    #     f"\t* Head:\t{n_head}\n"
+    #     f"\t= Total (pre-training):\t{n_embeddings + n_encoder + n_head}\n"
+    #     f"\t= Total (encoder):\t{n_embeddings + n_encoder}\n"
+    # )
 
     param_count = sum([m.numel() for m in model.parameters()])
     logger.info('Model %s created, param count: %d' % (args.model, param_count))
@@ -447,96 +473,28 @@ def validate(args):
     top5 = AverageMeter()
     
     
-    
-    # if args.quantize:
-    #     click_config = get_quant_config()
-
-    #     # override number of batches
-    #     click_config.act_quant.num_batches = args.est_num_batches
-    #     click_config.quant.n_bits = args.n_bits
-    #     click_config.quant.n_bits_act = args.n_bits_act
-    #     if args.no_weight_quant:
-    #         click_config.quant.weight_quant = False
-    #     if args.no_act_quant:
-    #         click_config.quant.act_quant = False
-
-    #     # Weight Ranges
-    #     if args.ranges_weights == "minmax":
-    #         pass
-    #     elif args.ranges_weights in ("mse", "MSE"):
-    #         click_config.quant.weight_quant_method = RangeEstimators.MSE
-    #         click_config.quant.weight_opt_method = OptMethod.grid
-    #     else:
-    #         raise ValueError(f"Unknown weight range estimation: {args.ranges_weights}")
-
-    #     # Acts ranges
-    #     if args.percentile is not None:
-    #         click_config.act_quant.options["percentile"] = args.percentile
-
-    #     if args.ranges_acts == "running_minmax":
-    #         click_config.act_quant.quant_method = RangeEstimators.running_minmax
-
-    #     elif args.ranges_acts == "MSE":
-    #         click_config.act_quant.quant_method = RangeEstimators.MSE
-    #         if args.qmethod_acts == "symmetric_uniform":
-    #             click_config.act_quant.options = dict(opt_method=OptMethod.grid)
-    #         elif args.qmethod_acts == "asymmetric_uniform":
-    #             click_config.act_quant.options = dict(opt_method=OptMethod.golden_section)
-
-    #     elif args.ranges_acts.startswith("L"):
-    #         click_config.act_quant.quant_method = RangeEstimators.Lp
-    #         p_norm = float(args.ranges_acts.replace("L", ""))
-    #         options = dict(p_norm=p_norm)
-    #         if args.qmethod_acts == "symmetric_uniform":
-    #             options["opt_method"] = OptMethod.grid
-    #         elif args.qmethod_acts == "asymmetric_uniform":
-    #             options["opt_method"] = OptMethod.golden_section
-    #         click_config.act_quant.options = options
-
-    #     else:
-    #         raise NotImplementedError(f"Unknown act range estimation setting, '{args.ranges_acts}'")
-
-    #     qparams = val_qparams(click_config)
-    #     qparams["quant_dict"] = {}
-
-    #     model = QuantizedBertForMaskedLM(model, **qparams)
-    #     model.set_quant_state(
-    #         weight_quant=click_config.quant.weight_quant, act_quant=click_config.quant.act_quant
-    #     )
-
-    #     logger.info("Quantized model:")
-    #     logger.info(model)
-
-    #     # Range estimation
-    #     logger.info("** Estimate quantization ranges on training data **")
-    #     pass_data_for_range_estimation(
-    #         loader=eval_dataloader,
-    #         model=model,
-    #         act_quant=click_config.quant.act_quant,
-    #         max_num_batches=click_config.act_quant.num_batches,
-    #     )
-    #     model.fix_ranges()
-    #     model.set_quant_state(
-    #         weight_quant=click_config.quant.weight_quant, act_quant=click_config.quant.act_quant
-    #     )
-    
+    # Hong-Yu 2024/3/16 08:13 ##
     act_dict = {}
-    if EXTRA_METRICS:
+    if EXTRA_METRICS and not args.quantize:
         act_dict = attach_act_hooks(model)
-        
-    num_layers = model.depth
-    act_inf_norms = OrderedDict()
-    act_kurtoses = OrderedDict()
-    act_kurtoses_ffn = OrderedDict()
+
+        num_layers = len(model.blocks)
+        act_inf_norms = OrderedDict()
+        act_kurtoses = OrderedDict()
+        act_kurtoses_ffn = OrderedDict()
     model.eval()
+    if args.quantize:
+        quantize(model, weights=quanto.qfloat8, activations=quanto.qfloat8)
+
+
     
     with torch.no_grad():
         # warmup, reduce variability of first batch time, especially for comparing torchscript vs non
-        input = torch.randn((args.batch_size,) + tuple(data_config['input_size'])).to(device)
+        input = torch.randn((args.batch_size,) + tuple(data_config['input_size']))
         if args.channels_last:
             input = input.contiguous(memory_format=torch.channels_last)
         with amp_autocast():
-            model(input)
+            model(input.half().to(device))
 
         end = time.time()
         for batch_idx, (input, target) in enumerate(loader):
@@ -548,7 +506,7 @@ def validate(args):
 
             # compute output
             with amp_autocast():
-                output = model(input)
+                output = model(input.to(device).half())
 
                 if valid_labels is not None:
                     output = output[:, valid_labels]
@@ -583,15 +541,19 @@ def validate(args):
                         top5=top5
                     )
                 )
-            if EXTRA_METRICS:
-                for j in range(num_layers):
-                    for name, module in model.module.named_modules():
+
+            # if EXTRA_METRICS:
+            if not args.quantize:
+                for name, module in model.named_modules():
+                    if 'attn_drop' not in name and 'attn_scores' not in name and 'attn_probs_before_dropout' not in name and \
+                        'attn_probs_after_dropout' not in name and 'alpha' not in name:
                         x_inp, x_out = act_dict[name]
 
                         x = x_out
 
                         # inf-norm
-                        x = x.view(x.size(0), -1)
+                        
+                        x = x.detach().cpu().contiguous().view(x.size(0), -1)
                         inf_norms = x.norm(dim=1, p=np.inf)
                         if not name in act_inf_norms:
                             act_inf_norms[name] = AverageMeter()
@@ -604,30 +566,11 @@ def validate(args):
                             if not name in act_kurtoses:
                                 act_kurtoses[name] = AverageMeter()
                             for v in kurt:
-                                act_kurtoses[name].update(v.item())
+                                if v.item() == float("inf") or v.item() == float("-inf") or v.item() == float("nan"):
+                                    continue
+                                else:
+                                    act_kurtoses[name].update(v.item())
                                 
-                            for name in (f"blocks.{j}.mlp.fc2", f"blocks.{j}"):
-                                x_inp, x_out = act_dict[name]
-                                x = x_out
-                                kurt = kurtosis(x)
-                                if not name in act_kurtoses:
-                                    act_kurtoses_ffn[name] = AverageMeter()
-                                for v in kurt:
-                                    act_kurtoses_ffn[name].update(v.item())
-                                
-                                
-                            
-                                
-                        # # compute inf norm also for input
-                        # if "norm1" in name or "norm2" in name:
-                        #     x = x_inp
-                        #     x = x.view(x.size(0), -1)
-                        #     inf_norms = x.norm(dim=1, p=np.inf)
-                        #     name += ".input"
-                        #     if not name in act_inf_norms:
-                        #         act_inf_norms[name] = AverageMeter()
-                        #     for v in inf_norms:
-                        #         act_inf_norms[name].update(v.item())
 
 
     if real_labels is not None:
@@ -648,7 +591,8 @@ def validate(args):
     logger.info(' * Acc@1 {:.3f} ({:.3f}) Acc@5 {:.3f} ({:.3f})'.format(
        results['top1'], results['top1_err'], results['top5'], results['top5_err']))
 
-    if EXTRA_METRICS:
+    if not args.quantize:
+    # if EXTRA_METRICS:
         for name, v in act_inf_norms.items():
             results[name] = v.avg
             
@@ -657,23 +601,16 @@ def validate(args):
         max_layer_inf_norm = max(
             act_inf_norms[f"blocks.{j}"].avg for j in range(num_layers)
         )
-        #max_LN_inp_inf_norm = max(v.avg for k, v in act_inf_norms.items() if "input" in k)
-        # for name in (
-        #     f"blocks.{j}.mlp.fc2",  # FFN output 
-        #     ):
-        #     act_kurtoses_ffn = act_kurtoses[name]
-        #     avg_kurtosis = sum(v.avg for v.value in 
             
         avg_kurtosis = sum(v.avg for v in act_kurtoses.values()) / len(act_kurtoses.values())
-        avg_kurtosis_ffn = sum(v.avg for v in act_kurtoses_ffn.values()) / len(act_kurtoses_ffn.values())
+        #avg_kurtosis_ffn = sum(v.avg for v in act_kurtoses_ffn.values()) / len(act_kurtoses_ffn.values())
         max_kurtosis = max(v.avg for v in act_kurtoses.values())
 
-        # results["max_inf_norm"] = max_inf_norm 
+
         results["max_ffn_out_inf_norm"] = max_ffn_out_inf_norm
         results["max_layer_inf_norm"] = max_layer_inf_norm
-        #results["max_LN_inp_inf_norm"] = max_LN_inp_inf_norm
         results["avg_kurtosis"] = avg_kurtosis
-        results["avg_kurtosis_ffn"] = avg_kurtosis_ffn
+        #results["avg_kurtosis_ffn"] = avg_kurtosis_ffn
         results["max_kurtosis"] = max_kurtosis
 
         # logger.info(f"max inf norm: {max_inf_norm:.1f}")
@@ -681,12 +618,12 @@ def validate(args):
         logger.info(f"max layer inf norm: {max_layer_inf_norm:.1f}")
         # logger.info(f"max LN(FFN i + o) inf norm: {max_LN_out_inf_norm:.1f}")
         logger.info(f"Avg Kurtosis: {avg_kurtosis:.2f}")
-        logger.info(f"Avg Kurtosis for ffn and final output: {avg_kurtosis_ffn:.2f}")
+        # logger.info(f"Avg Kurtosis for ffn and final output: {avg_kurtosis_ffn:.2f}")
         logger.info(f"Max Kurtosis: {max_kurtosis:.1f}")
 
     if args.output_dir is not None:
         os.makedirs(args.output_dir, exist_ok=True)
-        with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
+        with open(os.path.join(args.output_dir, "all_results4.json"), "w") as f:
             json.dump(results, f)
     
     print(results)
@@ -775,8 +712,8 @@ def main():
         else:
             results = validate(args)
 
-    if args.results_file:
-        write_results(args.results_file, results, format=args.results_format)
+    # if args.results_file:
+    #     write_results(args.results_file, results, format=args.results_format)
 
     # output results in JSON to stdout w/ delimiter for runner script
     print(f'--result\n{json.dumps(results, indent=4)}')

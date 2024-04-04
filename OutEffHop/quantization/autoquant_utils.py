@@ -253,6 +253,7 @@ def quantize_model(model, specials=None, tie_activation_quantizers=False, **quan
         # one of these classes, for whatever reason
         modtype = module_map[type(model)]
         kwargs = get_module_args(model, None)
+       
         quant_model = modtype(**kwargs, **quant_params)
 
         quant_model.weight.data = model.weight.data
