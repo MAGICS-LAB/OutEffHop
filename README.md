@@ -1,6 +1,6 @@
 # Outlier Efficient Modern Hopfield Model (OutEffHop)
 
-This is the code of the paper OutHopEff. You can use this repo to reproduce the results in the paper.
+This is the code of the paper OutHopEff[https://arxiv.org/abs/2404.03828]. You can use this repo to reproduce the results in the paper.
 
 ## Outline Efficiency of OutEffHop
 ### Environmental Setup
@@ -299,5 +299,15 @@ https://github.com/MAGICS-LAB/STanHop
 
 https://github.com/Qualcomm-AI-research/outlier-free-transformers
 
-
+## Citi Us
+```
+@misc{hu2024outlierefficient,
+      title={Outlier-Efficient Hopfield Layers for Large Transformer-Based Models}, 
+      author={Jerry Yao-Chieh Hu and Pei-Hsuan Chang and Robin Luo and Hong-Yu Chen and Weijian Li and Wei-Po Wang and Han Liu},
+      year={2024},
+      eprint={2404.03828},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG}
+}
+```
 
