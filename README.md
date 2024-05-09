@@ -299,7 +299,7 @@ https://github.com/MAGICS-LAB/STanHop
 
 https://github.com/Qualcomm-AI-research/outlier-free-transformers
 
-## Citi Us
+## How to Cite
 ```
 @misc{hu2024outlierefficient,
       title={Outlier-Efficient Hopfield Layers for Large Transformer-Based Models}, 
