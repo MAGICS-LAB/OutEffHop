@@ -1,6 +1,6 @@
 # Outlier Efficient Modern Hopfield Model (OutEffHop)
 
-This is the code of the paper OutHopEff [https://arxiv.org/abs/2404.03828]. You can use this repo to reproduce the results in the paper.
+This is the code of the paper OutEffHop [https://arxiv.org/abs/2404.03828]. You can use this repo to reproduce the results in the paper.
 
 ## Outline Efficiency of OutEffHop
 ### Environmental Setup
