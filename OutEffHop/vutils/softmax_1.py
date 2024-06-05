@@ -21,12 +21,8 @@ def softmax_n(x, n = None, dim=-1, dtype=None):
 
 def softmax_1(x, dim=-1, _stacklevel=3, dtype=None):
     #subtract the max for stability
-    x = x - x.max(dim=dim, keepdim=True).values
-    #compute exponentials
-    exp_x = torch.exp(x)
-    #compute softmax values and add on in the denominator
-    return exp_x / (1 + exp_x.sum(dim=dim, keepdim=True))
-
+    return softmax_n(x, 1, dim=dim)
+    
 class Softmax_1(nn.Module):
     __constants__ = ["dim"]
 
