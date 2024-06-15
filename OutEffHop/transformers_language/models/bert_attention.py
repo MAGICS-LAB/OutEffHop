@@ -1,4 +1,4 @@
-# Copyright (c) 2023 Qualcomm Technologies, Inc.
+
 # All Rights Reserved.
 import math
 from functools import partial
