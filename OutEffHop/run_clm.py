@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 # coding=utf-8
-# Copyright (c) 2023 Qualcomm Technologies, Inc.
-# All Rights Reserved.
+
 """
 Fine-tuning the library models for causal language modeling (GPT, GPT-2, CTRL, ...)
 on a text file or a dataset without using HuggingFace Trainer.

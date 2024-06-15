@@ -1,5 +1,4 @@
-# Copyright (c) 2023 Qualcomm Technologies, Inc.
-# All Rights Reserved.
+
 import math
 from functools import partial
 from typing import Any, Callable, Dict, Sequence, Iterator, Tuple, Type, Union, List, Optional, Set
