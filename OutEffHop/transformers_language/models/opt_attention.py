@@ -1,4 +1,4 @@
-# Copyright (c) 2023 Qualcomm Technologies, Inc.
+
 # All Rights Reserved.
 from functools import partial
 from typing import Optional, Tuple
