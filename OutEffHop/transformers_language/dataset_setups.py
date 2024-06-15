@@ -1,5 +1,4 @@
-# Copyright (c) 2023 Qualcomm Technologies, Inc.
-# All Rights Reserved.
+
 from enum import auto
 
 from quantization.utils import BaseEnumOptions

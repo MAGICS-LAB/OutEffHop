@@ -1,5 +1,4 @@
-# Copyright (c) 2023 Qualcomm Technologies, Inc.
-# All Rights Reserved.
+
 from functools import partial
 from vutils.sparse_max import Sparsemax
 from vutils.entmax import Entmax15, entmax15

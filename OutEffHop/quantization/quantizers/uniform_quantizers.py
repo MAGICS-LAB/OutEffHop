@@ -1,5 +1,4 @@
-# Copyright (c) 2023 Qualcomm Technologies, Inc.
-# All Rights Reserved.
+
 import torch
 
 from quantization.quantizers.base_quantizers import QuantizerBase
