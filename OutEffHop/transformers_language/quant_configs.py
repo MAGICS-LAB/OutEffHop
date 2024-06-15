@@ -1,5 +1,4 @@
-# Copyright (c) 2023 Qualcomm Technologies, Inc.
-# All Rights Reserved.
+
 from quantization.quantizers import QMethods
 from quantization.range_estimators import RangeEstimators
 from transformers_language.utils import DotDict
