@@ -1,5 +1,4 @@
-# Copyright (c) 2023 Qualcomm Technologies, Inc.
-# All Rights Reserved.
+
 import warnings
 from typing import Dict, Union
 
