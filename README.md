@@ -307,8 +307,7 @@ If you find our work useful, please consider citing our paper:
   title={Outlier-Efficient Hopfield Layers for Large Transformer-Based Models},
   author={Hu, Jerry Yao-Chieh and Chang, Pei-Hsuan and Luo, Robin and Chen, Hong-Yu and Li, Weijian and Wang, Wei-Po and Liu, Han},
   booktitle={Forty-first International Conference on Machine Learning (ICML)},
-  year={2024},
-  url={https://arxiv.org/abs/2404.03828}
+  year={2024}
 }
 ```
 
