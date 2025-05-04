@@ -303,11 +303,13 @@ https://github.com/Qualcomm-AI-research/outlier-free-transformers
 If you find our work useful, please consider citing our paper:
 
 ```
-@inproceedings{hu2024outlier,
-  title={Outlier-Efficient Hopfield Layers for Large Transformer-Based Models},
-  author={Hu, Jerry Yao-Chieh and Chang, Pei-Hsuan and Luo, Robin and Chen, Hong-Yu and Li, Weijian and Wang, Wei-Po and Liu, Han},
-  booktitle={Forty-first International Conference on Machine Learning (ICML)},
-  year={2024}
+@inproceedings{
+hu2024outlierefficient,
+title={Outlier-Efficient Hopfield Layers for Large Transformer-Based Models},
+author={Jerry Yao-Chieh Hu and Pei-Hsuan Chang and Haozheng Luo and Hong-Yu Chen and Weijian Li and Wei-Po Wang and Han Liu},
+booktitle={Forty-first International Conference on Machine Learning},
+year={2024},
+url={https://openreview.net/forum?id=kLiDMGJKx1}
 }
 ```
 
